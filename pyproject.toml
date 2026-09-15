@@ -27,6 +27,7 @@ speedmeter = "speedmeter.cli:main"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.140,<7",
     "pytest>=9.1,<10",
     "ruff>=0.16.7,<0.17",
     "mypy>=2.3,<3",
