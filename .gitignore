@@ -1,0 +1,40 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Сборка и дистрибутивы ---
+build/
+dist/
+*.egg-info/
+*.egg
+
+# --- Виртуальные окружения ---
+# Poetry настроен на virtualenvs.in-project, поэтому .venv лежит в корне проекта.
+.venv/
+venv/
+env/
+
+# --- Кэши инструментов ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Редакторы и IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- ОС ---
+.DS_Store
+Thumbs.db
+
+# --- Локальные переменные окружения ---
+.env
+.env.local
