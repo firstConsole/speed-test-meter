@@ -8,11 +8,7 @@ have to assume rather than demonstrate.
 
 from __future__ import annotations
 
-import threading
 import tracemalloc
-from dataclasses import dataclass, field
-from email.message import Message
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
 
 import pytest
@@ -20,70 +16,12 @@ import pytest
 from speedmeter.adapters.http import HttpDownloader
 from speedmeter.exceptions import HttpStatusError, InvalidUrlError, TransportError
 from speedmeter.ports import Downloader
+from tests.helpers import SERVER_PAYLOAD_SIZE
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from tests.helpers import LocalServer
 
 pytestmark = pytest.mark.network
-
-PAYLOAD_SIZE = 3 * 1024 * 1024
-PAYLOAD = b"\xff" * PAYLOAD_SIZE
-
-
-@dataclass
-class LocalServer:
-    """A running loopback server plus a log of what it was asked for."""
-
-    base_url: str
-    requests: list[Message] = field(default_factory=list)
-
-    def url(self, path: str) -> str:
-        """Build an absolute URL for ``path`` on this server."""
-        return f"{self.base_url}{path}"
-
-
-@pytest.fixture(scope="module")
-def server() -> Iterator[LocalServer]:
-    """Serve a few canned responses on an ephemeral loopback port."""
-    recorded: list[Message] = []
-
-    class Handler(BaseHTTPRequestHandler):
-        # Speak HTTP/1.1 with keep-alive, as a real CDN would, so the adapter
-        # is exercised against the connection handling it will actually meet.
-        protocol_version = "HTTP/1.1"
-
-        # The name is fixed by BaseHTTPRequestHandler's dispatch.
-        def do_GET(self) -> None:
-            recorded.append(self.headers)
-            if self.path == "/missing":
-                self.send_error(404)
-                return
-            if self.path == "/broken":
-                self.send_error(500)
-                return
-            body = b"" if self.path == "/empty" else PAYLOAD
-            self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
-            """Keep the test output clean."""
-
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    httpd.daemon_threads = True
-    host, port = httpd.server_address[:2]
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield LocalServer(base_url=f"http://{host!s}:{port}", requests=recorded)
-    finally:
-        # Shut down deliberately: filterwarnings = ["error"] turns a leaked
-        # socket into a failure attached to whatever test runs next.
-        httpd.shutdown()
-        httpd.server_close()
-        thread.join(timeout=5)
 
 
 @pytest.fixture
@@ -102,7 +40,7 @@ class TestSuccessfulDownload:
     ) -> None:
         result = downloader.download(server.url("/heavy.jpg"))
 
-        assert result.size_bytes == PAYLOAD_SIZE
+        assert result.size_bytes == SERVER_PAYLOAD_SIZE
 
     def test_reports_the_status_and_the_url(
         self, downloader: HttpDownloader, server: LocalServer
@@ -124,7 +62,7 @@ class TestSuccessfulDownload:
     def test_accepts_an_empty_body(self, downloader: HttpDownloader, server: LocalServer) -> None:
         assert downloader.download(server.url("/empty")).size_bytes == 0
 
-    @pytest.mark.parametrize("chunk_size", [1, 512, 64 * 1024, PAYLOAD_SIZE * 2])
+    @pytest.mark.parametrize("chunk_size", [1, 512, 64 * 1024, SERVER_PAYLOAD_SIZE * 2])
     def test_chunk_size_does_not_change_the_byte_count(
         self, server: LocalServer, chunk_size: int
     ) -> None:
@@ -132,7 +70,7 @@ class TestSuccessfulDownload:
         # one byte at a time, and a buffer larger than the whole body.
         downloader = HttpDownloader(chunk_size=chunk_size, timeout_seconds=10.0)
 
-        assert downloader.download(server.url("/heavy.jpg")).size_bytes == PAYLOAD_SIZE
+        assert downloader.download(server.url("/heavy.jpg")).size_bytes == SERVER_PAYLOAD_SIZE
 
 
 class TestRequestHeaders:
@@ -170,10 +108,10 @@ class TestMemoryUse:
         finally:
             tracemalloc.stop()
 
-        # A buffering implementation would peak at or above PAYLOAD_SIZE.
+        # A buffering implementation would peak at or above SERVER_PAYLOAD_SIZE.
         # The bound is deliberately loose -- an order of magnitude below the
         # payload -- so this fails on a real regression, not on allocator noise.
-        assert peak < PAYLOAD_SIZE // 10
+        assert peak < SERVER_PAYLOAD_SIZE // 10
 
 
 class TestHttpFailures:

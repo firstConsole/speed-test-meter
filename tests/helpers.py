@@ -9,7 +9,8 @@ works without any ``__init__.py``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from email.message import Message
 from typing import TYPE_CHECKING, Literal
 
 from speedmeter.domain import DownloadResult, SpeedReport
@@ -54,6 +55,25 @@ def make_report(*results: DownloadResult, failures: tuple[str, ...] = ()) -> Spe
 def successes(count: int) -> list[Outcome]:
     """Build a script of ``count`` identical successful outcomes."""
     return [make_result() for _ in range(count)]
+
+
+SERVER_PAYLOAD_SIZE = 3 * 1024 * 1024
+"""Body size served by the shared local server fixture."""
+
+SERVER_PAYLOAD = b"\xff" * SERVER_PAYLOAD_SIZE
+"""Body served by the shared local server fixture."""
+
+
+@dataclass
+class LocalServer:
+    """A running loopback server plus a log of what it was asked for."""
+
+    base_url: str
+    requests: list[Message] = field(default_factory=list)
+
+    def url(self, path: str) -> str:
+        """Build an absolute URL for ``path`` on this server."""
+        return f"{self.base_url}{path}"
 
 
 IDENTICAL_PAYLOAD_BYTES = 5_000_000
