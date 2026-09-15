@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run per pull request and one per pushed ref; a new push cancels the
+# superseded run. Keyed on the PR number rather than the branch name, because
+# two forks can both open a PR from a branch called "patch-1" and would
+# otherwise cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned so CI matches the version used locally. Bump deliberately.
+  POETRY_VERSION: "2.4.1"
+  # The interpreter used wherever the job does not depend on the version.
+  DEFAULT_PYTHON: "3.13"
+
+jobs:
+  lint:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    # Install plus three fast checks; anything beyond this is hung, not slow.
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # MUST come before actions/setup-python. With `cache: poetry`,
+      # setup-python shells out to `poetry config --list` to discover what to
+      # cache, and fails outright if poetry is not yet on PATH. pipx is
+      # preinstalled on GitHub-hosted runners and keeps Poetry in its own
+      # virtualenv, so Poetry's dependencies cannot collide with ours.
+      - name: Install Poetry
+        run: |
+          pipx install "poetry==$POETRY_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Also before setup-python: the cache helper only adds the project-local
+      # .venv to its cached paths when this is already configured.
+      - name: Use an in-project virtualenv
+        run: poetry config virtualenvs.in-project true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: poetry
+
+      - name: Verify the lock file matches pyproject.toml
+        run: poetry check --lock
+
+      # `sync` rather than `install`: it also removes anything a restored cache
+      # left behind that the lock file no longer names.
+      - name: Install dependencies
+        run: poetry sync --no-interaction
+
+      # Run once, not once per interpreter. Ruff's target-version and mypy's
+      # python_version are both fixed in pyproject.toml, so neither tool's
+      # verdict depends on the interpreter executing it.
+      - name: Ruff lint
+        run: poetry run ruff check --output-format=github .
+
+      - name: Ruff format
+        run: poetry run ruff format --check --diff .
+
+      # Targets are explicit. A bare `mypy` exits 2 with "Missing target
+      # module, package, files, or command" unless [tool.mypy] happens to set
+      # `files`, and CI must not silently depend on that.
+      - name: Mypy
+        run: poetry run mypy src tests
+
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      # Report every interpreter. A break on 3.10 alone must not hide 3.13.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Poetry
+        run: |
+          pipx install "poetry==$POETRY_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Use an in-project virtualenv
+        run: poetry config virtualenvs.in-project true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        id: setup-python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: poetry
+
+      # Poetry itself runs on the runner's own interpreter, which is NOT the
+      # matrix entry. Point the project virtualenv at the one setup-python just
+      # installed, then print it so the log proves which Python was tested.
+      - name: Point the virtualenv at the matrix interpreter
+        env:
+          MATRIX_PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          poetry env use "$MATRIX_PYTHON_PATH"
+          poetry run python -VV
+
+      - name: Install dependencies
+        run: poetry sync --no-interaction
+
+      - name: Pytest
+        run: poetry run pytest
+
+  package:
+    name: Build and install the package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Catches a class of defect no other job can see: a packaging mistake that
+    # builds cleanly and passes `poetry check --strict`, yet produces a wheel
+    # whose importable package has the wrong name. The tests here all run
+    # against the source tree, so only installing the built artefact and
+    # importing it proves the distribution is usable.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Poetry
+        run: |
+          pipx install "poetry==$POETRY_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+
+      - name: Build the wheel and the sdist
+        run: poetry build
+
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv /tmp/probe
+          /tmp/probe/bin/pip install --no-cache-dir dist/*.whl
+
+      - name: Import the installed package
+        run: /tmp/probe/bin/python -c "import speedmeter; print(speedmeter.__version__)"
+
+      - name: Run the installed console script
+        run: /tmp/probe/bin/speedmeter --version

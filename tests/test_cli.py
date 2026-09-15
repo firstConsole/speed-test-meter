@@ -38,7 +38,6 @@ def install_downloader(
     return install
 
 
-
 class TestExitCodes:
     """What the process returns, which is the only thing a script can read."""
 
