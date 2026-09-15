@@ -154,8 +154,7 @@ addopts = [
 ]
 
 markers = [
-    "unit: fast, fully isolated test with no I/O.",
-    "network: test that performs real network I/O (deselect with -m 'not network').",
+    "network: test that opens a real socket (deselect with -m 'not network').",
 ]
 
 filterwarnings = ["error"]
