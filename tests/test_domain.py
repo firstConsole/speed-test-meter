@@ -10,31 +10,9 @@ from speedmeter.domain import (
     BITS_PER_BYTE,
     BITS_PER_MEGABIT,
     BYTES_PER_MEGABYTE,
-    DownloadResult,
     SpeedReport,
 )
-
-URL = "https://example.invalid/heavy.jpg"
-
-
-def make_result(size_bytes: int = 1_000_000, elapsed_seconds: float = 1.0) -> DownloadResult:
-    """Build a valid result, overriding only what a test cares about."""
-    return DownloadResult(
-        url=URL,
-        status_code=200,
-        size_bytes=size_bytes,
-        elapsed_seconds=elapsed_seconds,
-    )
-
-
-def make_report(*results: DownloadResult, failures: tuple[str, ...] = ()) -> SpeedReport:
-    """Build a report whose requested attempt count matches what it was given."""
-    return SpeedReport(
-        url=URL,
-        requested_attempts=len(results) + len(failures),
-        results=results,
-        failures=failures,
-    )
+from tests.helpers import make_report, make_result
 
 
 class TestDownloadResult:
