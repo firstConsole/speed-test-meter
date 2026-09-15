@@ -56,6 +56,37 @@ def successes(count: int) -> list[Outcome]:
     return [make_result() for _ in range(count)]
 
 
+IDENTICAL_PAYLOAD_BYTES = 5_000_000
+"""Payload size used by :func:`report_with_rates`.
+
+Fixed across attempts because that is what a real run does -- it refetches one
+file -- and because it makes the aggregate rate exactly the harmonic mean of
+the per-attempt rates, which several tests rely on.
+"""
+
+
+def report_with_rates(*megabytes_per_second: float) -> SpeedReport:
+    """Build a report whose attempts achieved exactly the given rates.
+
+    Each attempt moves the same number of bytes, so the duration is derived
+    from the requested rate. Lets a test state the shape of a run in the unit
+    it reasons about instead of in seconds.
+    """
+    results = tuple(
+        make_result(
+            size_bytes=IDENTICAL_PAYLOAD_BYTES,
+            elapsed_seconds=IDENTICAL_PAYLOAD_BYTES / (rate * 1_000_000),
+        )
+        for rate in megabytes_per_second
+    )
+    return SpeedReport(
+        url=URL,
+        requested_attempts=len(results),
+        results=results,
+        failures=(),
+    )
+
+
 class ScriptedDownloader(Downloader):
     """A downloader that replays a prepared sequence of outcomes.
 

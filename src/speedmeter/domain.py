@@ -9,6 +9,7 @@ can be tested without touching the network.
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass
 from typing import Final
 
@@ -29,6 +30,15 @@ BITS_PER_MEGABIT: Final = 1_000_000
 
 BITS_PER_BYTE: Final = 8
 """Bits in one byte."""
+
+MINIMUM_SAMPLES_FOR_SPREAD: Final = 2
+"""Fewest successful attempts that can exhibit any spread at all.
+
+One download has nothing to vary against, so the spread figures are
+``None`` below this count rather than zero. Zero would be indistinguishable
+from the most flattering real answer -- a perfectly steady connection --
+and would assert that from a single data point.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,3 +172,93 @@ class SpeedReport:
     def megabits_per_second(self) -> float:
         """Return the aggregate transfer rate in SI megabits per second."""
         return self.bytes_per_second * BITS_PER_BYTE / BITS_PER_MEGABIT
+
+    @property
+    def _attempt_megabytes_per_second(self) -> tuple[float, ...]:
+        """Return the rate each individual attempt achieved, in SI megabytes per second.
+
+        The spread figures below are built from per-attempt rates rather than
+        per-attempt durations. Both would work while the server keeps returning
+        the same payload, but nothing guarantees that, and durations are only
+        comparable between attempts that moved the same number of bytes. Rates
+        are also the unit the headline is quoted in, so the two read together.
+        """
+        return tuple(result.bytes_per_second / BYTES_PER_MEGABYTE for result in self.results)
+
+    @property
+    def slowest_megabytes_per_second(self) -> float:
+        """Return the rate of the slowest attempt, or zero if none succeeded.
+
+        This is the floor the connection actually reached. No average can
+        answer that, and it is the figure that decides whether something
+        latency-sensitive survives.
+        """
+        if not self.results:
+            return 0.0
+        return min(self._attempt_megabytes_per_second)
+
+    @property
+    def fastest_megabytes_per_second(self) -> float:
+        """Return the rate of the fastest attempt, or zero if none succeeded.
+
+        Read together with :attr:`slowest_megabytes_per_second` it bounds the
+        run. A ceiling far above the rest is a reason to look closer rather
+        than a diagnosis: TCP slow start, an ISP burst allowance and a caching
+        proxy all produce it, and one number cannot tell them apart.
+        """
+        if not self.results:
+            return 0.0
+        return max(self._attempt_megabytes_per_second)
+
+    @property
+    def has_spread(self) -> bool:
+        """Return whether enough attempts succeeded to say anything about spread."""
+        return self.successful_attempts >= MINIMUM_SAMPLES_FOR_SPREAD
+
+    @property
+    def megabytes_per_second_stdev(self) -> float | None:
+        """Return the sample standard deviation of the per-attempt rates, in MB/s.
+
+        ``None`` when fewer than :data:`MINIMUM_SAMPLES_FOR_SPREAD` attempts
+        succeeded. That is deliberately not zero: the sample standard deviation
+        of one observation is undefined, and returning zero would claim a
+        perfectly steady connection on the evidence of a single download. The
+        optional type also makes a type checker reject arithmetic on the value
+        until the caller has handled the missing case.
+
+        The sample form, dividing by ``n - 1``, is used because ten attempts
+        sample an ongoing connection rather than constituting its entire
+        population. Read the result as "steady or not" rather than as a precise
+        figure: at ten samples squaring the deviations lets one bad attempt
+        supply most of the sum.
+        """
+        if not self.has_spread:
+            return None
+        return statistics.stdev(self._attempt_megabytes_per_second)
+
+    @property
+    def coefficient_of_variation(self) -> float | None:
+        """Return the spread of the attempt rates as a fraction of their mean.
+
+        A standard deviation alone cannot say whether a spread is large: half a
+        megabyte per second of wobble is nothing on a 50 MB/s link and
+        crippling on a 1 MB/s one. Dividing one by the other gives a unitless
+        ratio that compares across connections. Multiply by 100 to show a
+        percentage.
+
+        The divisor is the plain arithmetic mean of the per-attempt rates, not
+        :attr:`megabytes_per_second`. The headline weights each attempt by its
+        duration, so it sinks as the attempts disagree; using it would put the
+        spread into the divisor as well as the numerator and overstate the
+        ratio.
+
+        ``None`` when the spread is unavailable, and when every attempt moved
+        zero bytes, which leaves nothing to take a ratio against.
+        """
+        stdev = self.megabytes_per_second_stdev
+        if stdev is None:
+            return None
+        mean_rate = statistics.fmean(self._attempt_megabytes_per_second)
+        if mean_rate <= 0:
+            return None
+        return stdev / mean_rate

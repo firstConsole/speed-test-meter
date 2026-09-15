@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import statistics
 
 import pytest
 
@@ -12,7 +13,7 @@ from speedmeter.domain import (
     BYTES_PER_MEGABYTE,
     SpeedReport,
 )
-from tests.helpers import make_report, make_result
+from tests.helpers import make_report, make_result, report_with_rates
 
 
 class TestDownloadResult:
@@ -149,3 +150,132 @@ class TestEmptySpeedReport:
 
     def test_keeps_the_failure_reasons(self, report: SpeedReport) -> None:
         assert report.failures == ("timed out", "connection refused")
+
+
+class TestSpreadExtremes:
+    """The floor and the ceiling the connection actually reached."""
+
+    def test_reports_the_slowest_and_fastest_attempt(self) -> None:
+        report = report_with_rates(5.0, 1.0, 3.0)
+
+        assert report.slowest_megabytes_per_second == pytest.approx(1.0)
+        assert report.fastest_megabytes_per_second == pytest.approx(5.0)
+
+    def test_a_single_attempt_is_its_own_floor_and_ceiling(self) -> None:
+        report = report_with_rates(4.0)
+
+        assert report.slowest_megabytes_per_second == pytest.approx(4.0)
+        assert report.fastest_megabytes_per_second == pytest.approx(4.0)
+
+    def test_the_headline_always_falls_between_them(self) -> None:
+        report = report_with_rates(7.7, 2.3, 5.0, 4.1, 6.6)
+
+        assert report.slowest_megabytes_per_second <= report.megabytes_per_second
+        assert report.megabytes_per_second <= report.fastest_megabytes_per_second
+
+    def test_returns_zero_when_nothing_succeeded(self) -> None:
+        report = make_report(failures=("timed out",))
+
+        assert report.slowest_megabytes_per_second == 0.0
+        assert report.fastest_megabytes_per_second == 0.0
+
+
+class TestSpreadAvailability:
+    """Whether the run can say anything about consistency at all."""
+
+    @pytest.mark.parametrize("rates", [(), (5.0,)])
+    def test_one_attempt_or_fewer_has_no_spread(self, rates: tuple[float, ...]) -> None:
+        assert report_with_rates(*rates).has_spread is False
+
+    def test_two_attempts_are_enough(self) -> None:
+        assert report_with_rates(5.0, 4.0).has_spread is True
+
+
+class TestStandardDeviation:
+    """How much the attempts disagreed with each other."""
+
+    def test_matches_the_sample_standard_deviation_of_the_rates(self) -> None:
+        rates = (7.7, 2.3, 5.0, 4.1, 6.6)
+
+        report = report_with_rates(*rates)
+
+        assert report.megabytes_per_second_stdev == pytest.approx(statistics.stdev(rates))
+
+    def test_identical_attempts_give_exactly_zero(self) -> None:
+        # Exactly 0.0, not 1e-17: a hand-rolled sum-of-squares variance leaves
+        # floating-point residue here and would print a phantom spread.
+        assert report_with_rates(*([5.0] * 10)).megabytes_per_second_stdev == 0.0
+
+    @pytest.mark.parametrize("rates", [(), (5.0,)])
+    def test_is_none_below_two_attempts(self, rates: tuple[float, ...]) -> None:
+        """One observation has no sample standard deviation, and zero would lie.
+
+        Zero is indistinguishable from the most flattering real answer -- a
+        perfectly steady connection -- so returning it would assert that from a
+        single download.
+        """
+        assert report_with_rates(*rates).megabytes_per_second_stdev is None
+
+
+class TestCoefficientOfVariation:
+    """Spread expressed as a fraction of the mean, so it compares across links."""
+
+    def test_is_the_deviation_over_the_arithmetic_mean_of_the_rates(self) -> None:
+        rates = (7.7, 2.3, 5.0, 4.1, 6.6)
+
+        report = report_with_rates(*rates)
+
+        expected = statistics.stdev(rates) / statistics.fmean(rates)
+        assert report.coefficient_of_variation == pytest.approx(expected)
+
+    def test_the_divisor_is_not_the_headline(self) -> None:
+        """The headline is duration-weighted and sinks as attempts disagree.
+
+        Dividing by it would put the spread into the divisor as well as the
+        numerator and overstate the ratio.
+        """
+        rates = (7.7, 2.3)
+        report = report_with_rates(*rates)
+
+        overstated = statistics.stdev(rates) / report.megabytes_per_second
+        assert report.coefficient_of_variation is not None
+        assert report.coefficient_of_variation < overstated
+
+    def test_identical_attempts_give_zero(self) -> None:
+        assert report_with_rates(*([5.0] * 4)).coefficient_of_variation == 0.0
+
+    @pytest.mark.parametrize("rates", [(), (5.0,)])
+    def test_is_none_when_there_is_no_spread_to_scale(self, rates: tuple[float, ...]) -> None:
+        assert report_with_rates(*rates).coefficient_of_variation is None
+
+    def test_is_none_when_every_attempt_moved_no_bytes(self) -> None:
+        # Nothing to take a ratio against; zero would claim perfect steadiness.
+        empty_bodies = make_report(
+            make_result(size_bytes=0, elapsed_seconds=1.0),
+            make_result(size_bytes=0, elapsed_seconds=2.0),
+        )
+
+        assert empty_bodies.coefficient_of_variation is None
+
+
+class TestSpreadDistinguishesRunsTheHeadlineCannot:
+    """The reason these figures exist at all."""
+
+    def test_two_runs_can_share_a_headline_and_describe_different_connections(self) -> None:
+        """Pin the case that motivates every figure in this section.
+
+        The aggregate rate is the harmonic mean of the per-attempt rates when
+        every attempt fetches the same file, so it conflates "slow" with
+        "erratic". These two runs report an identical headline: one is a steady
+        link, the other collapses from 7.7 to 3.02 MB/s halfway through.
+        """
+        steady = report_with_rates(*([4.3389] * 10))
+        collapsing = report_with_rates(*([7.7] * 5), *([3.0205] * 5))
+
+        assert steady.megabytes_per_second == pytest.approx(
+            collapsing.megabytes_per_second, rel=1e-4
+        )
+
+        assert steady.megabytes_per_second_stdev == pytest.approx(0.0)
+        assert collapsing.megabytes_per_second_stdev == pytest.approx(2.35, abs=0.2)
+        assert collapsing.fastest_megabytes_per_second - collapsing.slowest_megabytes_per_second > 4
