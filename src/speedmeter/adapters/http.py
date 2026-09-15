@@ -140,7 +140,14 @@ class HttpDownloader(Downloader):
             # Subclasses URLError, so it has to be caught first. urllib raises
             # this for 4xx and 5xx; a 404 page still transfers bytes, and
             # without this branch the run would measure the error page.
-            raise HttpStatusError(url, error.code) from error
+            #
+            # HTTPError is itself a response object holding an open socket, and
+            # urllib hands it over without closing it. Closing it here is not
+            # tidiness: a run against a failing address would otherwise leak one
+            # connection per attempt.
+            status_code = error.code
+            error.close()
+            raise HttpStatusError(url, status_code) from error
         except urllib.error.URLError as error:
             raise TransportError(url, str(error.reason)) from error
         except TimeoutError as error:
